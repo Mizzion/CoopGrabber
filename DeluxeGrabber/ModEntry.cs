@@ -264,6 +264,26 @@ namespace DeluxeGrabber
                                             gainExperience(FORAGING, 3);
                                         }
                                     }
+                                    else if (pot.bush.Value != null) // tea bush - needs very special handling
+                                    {
+                                        // workaround for following problem:
+                                        // - pot is initialized with (private) bushLoadDirty = true
+                                        // - if updateWhenCurrentLocation is called while bushLoadDirty, it calls bush.loadSprite()
+                                        // - Bush.loadSprite will reset tileSheetOffset to 1
+                                        // summary: harvester will pick up tea leaves, then loadSprite will be called (after player enters
+                                        // the location) and give player new batch to harvest manually on first day after game loads. We
+                                        // call the update here to reset the dirty flag early, BEFORE letting TryHarvestBush do it's work
+                                        pot.updateWhenCurrentLocation(Game1.currentGameTime, location);
+
+                                        var harvests = TryHarvestBush(pot.bush.Value);
+                                        foreach (var item in harvests)
+                                        {
+                                            if (!((grabber.heldObject.Value as Chest).items.Count >= 36))
+                                            {
+                                                (grabber.heldObject.Value as Chest).addItem(item);
+                                            }
+                                        }
+                                    }
                                 }
                                 else if (location.terrainFeatures.ContainsKey(tile) && location.terrainFeatures[tile] is FruitTree fruitTree)
                                 {
@@ -286,6 +306,51 @@ namespace DeluxeGrabber
                     }
                 }
             }
+        }
+
+        private IEnumerable<Object> TryHarvestBush(Bush bush)
+        {
+            // adapted from Bush.shake(...)
+            if (!bush.townBush.Value && bush.tileSheetOffset.Value == 1 && bush.inBloom(Game1.currentSeason, Game1.dayOfMonth))
+            {
+                int parentSheetIndex = -1;
+                string currentSeason = Game1.currentSeason;
+                if (!(currentSeason == "spring"))
+                {
+                    if (currentSeason == "fall")
+                        parentSheetIndex = 410; // blackberry
+                }
+                else
+                    parentSheetIndex = 296; // salmonberry
+                if (bush.size.Value == 3)
+                    parentSheetIndex = 815; // tea
+                if (parentSheetIndex == -1)
+                    return null;
+                bush.tileSheetOffset.Value = 0;
+                bush.setUpSourceRect();
+                var random = new System.Random((int)bush.currentTileLocation.X + (int)bush.currentTileLocation.Y * 5000 + (int)Game1.uniqueIDForThisGame + (int)Game1.stats.DaysPlayed);
+                if (bush.size.Value == 3)
+                {
+                    return new Object[] { new Object(815, 1, false, -1, 0) };
+                    //int num = 1;
+                    //for (int index = 0; index < num; ++index)
+                    //{
+                    //  Game1.createObjectDebris(815, (int)bush.currentTileLocation.X, (int)bush.currentTileLocation.Y, -1, 0, 1f, (GameLocation)null);
+                    //}
+                }
+                else
+                {
+                    var harvest = new List<Object>();
+                    int num = random.Next(1, 2) + Game1.player.ForagingLevel / 4;
+                    for (int index = 0; index < num; ++index)
+                    {
+                        harvest.Add(new Object(parentSheetIndex, 1, false, -1, Game1.player.professions.Contains(16) ? 4 : 0));
+                        //Game1.createItemDebris((Item)new StardewValley.Object(parentSheetIndex, 1, false, -1, Game1.player.professions.Contains(16) ? 4 : 0), Utility.PointToVector2(this.getBoundingBox().Center), Game1.random.Next(1, 4), (GameLocation)null, -1);
+                    }
+                    return harvest;
+                }
+            }
+            return new Object[0];
         }
 
         private Object GetHarvest(HoeDirt dirt, Vector2 tile, GameLocation location) {
@@ -481,20 +546,27 @@ namespace DeluxeGrabber
                     }
                 }
 
-                // Check for berry bushes
-                int berryIndex;
+                // Check for berry (and tea) bushes
                 string berryType;
                 
                 foreach (LargeTerrainFeature feature in location.largeTerrainFeatures) {
 
+                    var bush = feature as Bush;
+                    if (bush == null)
+                    {
+                        continue;
+                    }
+                    if (!bush.inBloom(Game1.currentSeason, Game1.dayOfMonth) || bush.tileSheetOffset.Value != 1)
+                    {
+                        continue;
+                    }
+
                     if (Game1.currentSeason == "spring") {
                         berryType = "Salmon Berry";
-                        berryIndex = 296;
                     } else if (Game1.currentSeason == "fall") {
                         berryType = "Blackberry";
-                        berryIndex = 410;
                     } else {
-                        break;
+                        berryType = "Tea Leaves";
                     }
 
                     if ((grabber.heldObject.Value as Chest).items.Count >= 36) {
@@ -502,24 +574,14 @@ namespace DeluxeGrabber
                         return;
                     }
 
-                    if (feature is Bush bush) {
-                        if (bush.inBloom(Game1.currentSeason, Game1.dayOfMonth) && bush.tileSheetOffset.Value == 1) {
-                            
-                            Object berry = new Object(berryIndex, 1 + Game1.player.FarmingLevel / 4, false, -1, 0);
-                            
-                            if (Game1.player.professions.Contains(16)) {
-                                berry.Quality = 4;
-                            }
+                    var berries = TryHarvestBush(bush);
 
-                            bush.tileSheetOffset.Value = 0;
-                            bush.setUpSourceRect();
-
-                            Item item = (grabber.heldObject.Value as Chest).addItem(berry);
-                            if (!itemsAdded.ContainsKey(berryType)) {
-                                itemsAdded.Add(berryType, 1);
-                            } else {
-                                itemsAdded[berryType] += 1;
-                            }
+                    foreach (var berry in berries) {
+                        Item item = (grabber.heldObject.Value as Chest).addItem(berry);
+                        if (!itemsAdded.ContainsKey(berryType)) {
+                            itemsAdded.Add(berryType, 1);
+                        } else {
+                            itemsAdded[berryType] += 1;
                         }
                     }
                 }
