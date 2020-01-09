@@ -1,4 +1,5 @@
-﻿using Microsoft.Xna.Framework;
+﻿using System;
+using Microsoft.Xna.Framework;
 using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using StardewValley;
@@ -7,21 +8,21 @@ using StardewValley.Locations;
 using StardewValley.Objects;
 using StardewValley.TerrainFeatures;
 using System.Collections.Generic;
+using System.Linq;
+using Object = StardewValley.Object;
 
 namespace DeluxeGrabber
 {
     public class ModEntry : Mod {
 
-        private ModConfig Config;
-        private List<string> quality = new List<string>() { "basic", "silver", "gold", "3", "iridium" };
-        private readonly int FARMING = 0;
-        private readonly int FORAGING = 2;
+        private ModConfig _config;
+        private readonly List<string> _qualityStrings = new List<string>() { "basic", "silver", "gold", "3", "iridium" };
 
         /// <summary>The mod entry point, called after the mod is first loaded.</summary>
         /// <param name="helper">Provides simplified APIs for writing mods.</param>
         public override void Entry(IModHelper helper) {
 
-            Config = Helper.ReadConfig<ModConfig>();
+            _config = Helper.ReadConfig<ModConfig>();
 
             Helper.ConsoleCommands.Add("printLocation", "Print current map and tile location", PrintLocation);
             Helper.ConsoleCommands.Add("setForagerLocation", "Set current location as global grabber location", SetForagerLocation);
@@ -33,17 +34,17 @@ namespace DeluxeGrabber
         /// <summary>Get an API that other mods can access. This is always called after <see cref="M:StardewModdingAPI.Mod.Entry(StardewModdingAPI.IModHelper)" />.</summary>
         public override object GetApi()
         {
-            return new ModAPI(this.Config);
+            return new ModAPI(this._config);
         }
 
         private void SetForagerLocation(string arg1, string[] arg2) {
             if (!Context.IsWorldReady) {
                 return;
             }
-            Config.GlobalForageMap = Game1.player.currentLocation.Name;
-            Config.GlobalForageTileX = Game1.player.getTileX();
-            Config.GlobalForageTileY = Game1.player.getTileY();
-            Helper.WriteConfig(Config);
+            _config.GlobalForageMap = Game1.player.currentLocation.Name;
+            _config.GlobalForageTileX = Game1.player.getTileX();
+            _config.GlobalForageTileY = Game1.player.getTileY();
+            Helper.WriteConfig(_config);
         }
 
         private void PrintLocation(string arg1, string[] arg2) {
@@ -58,69 +59,69 @@ namespace DeluxeGrabber
         /// <param name="sender">The event sender.</param>
         /// <param name="e">The event data.</param>
         private void OnObjectListChanged(object sender, ObjectListChangedEventArgs e) {
-            if (!Config.DoHarvestTruffles) {
+            if (!this._config.DoHarvestTruffles) return;
+			if (!e.Location.Name.Equals("Farm", StringComparison.InvariantCultureIgnoreCase)) return;
+
+			var truffles = e.Added.Where(x => x.Value.Name.Equals("Truffle", StringComparison.InvariantCultureIgnoreCase)).ToList();
+        
+			if (truffles.Count == 0) return;
+
+			StardewValley.Object grabber = null;
+
+			// Try to find global grabber
+			var globalForageMap = Game1.getLocationFromName(_config.GlobalForageMap);
+            globalForageMap?.Objects.TryGetValue(new Vector2(_config.GlobalForageTileX, _config.GlobalForageTileY), out grabber);
+            // No global grabber
+			if (grabber == null || !grabber.Name.Contains("Grabber")) {
+				grabber = e.Location.Objects.Values.FirstOrDefault(x => x.Name.Contains("Grabber"));
+				if (grabber == null) return;
+			}
+
+			grabber.showNextIndex.Value = true;
+
+            if (!(grabber.heldObject.Value is Chest chest))
+            {
                 return;
             }
-
-            GameLocation foragerMap;
-            foragerMap = Game1.getLocationFromName(Config.GlobalForageMap);
-            if (foragerMap == null) {
-                return;
-            }
-
-            foragerMap.Objects.TryGetValue(new Vector2(Config.GlobalForageTileX, Config.GlobalForageTileY), out Object grabber);
-
-            if (grabber == null || !grabber.Name.Contains("Grabber")) {
-                return;
-            }
-
             
-            System.Random random = new System.Random();
-            foreach (KeyValuePair<Vector2, Object> pair in e.Added) {
-
-                if (pair.Value.ParentSheetIndex != 430 || pair.Value.bigCraftable.Value) {
-                    continue;
+			// Pick up truffles
+			foreach (var truffle in truffles)
+            {
+                if (chest.items.Count >= 36)
+                {
+                    Monitor.Log($"Can't grab truffle: Auto-grabber inventory full.");
+                    break;
                 }
+                
+				if (Game1.player.professions.Contains(16)) {
+					truffle.Value.Quality = 4;
+				}
+				else if (Game1.random.NextDouble() < (double)Game1.player.ForagingLevel / 30.0) {
+					truffle.Value.Quality = 2;
+				}
+				else if (Game1.random.NextDouble() < (double)Game1.player.ForagingLevel / 15.0) {
+					truffle.Value.Quality = 1;
+				}
 
-                if ((grabber.heldObject.Value as Chest).items.Count >= 36) {
-                    return;
-                }
+				if (truffle.Value.Stack == 0) {
+					truffle.Value.Stack = 1;
+				}
+				if (Game1.player.professions.Contains(13)) {
+                    
+					while (Game1.random.NextDouble() < 0.2) {
+						truffle.Value.Stack += 1;
+					}
+				}
+            
+				base.Monitor.Log($"Grabbing truffle: {truffle.Value.Stack}x{this._qualityStrings[truffle.Value.Quality]}", LogLevel.Trace);
 
-                Object obj = pair.Value;
-                if (obj.Stack == 0) {
-                    obj.Stack = 1;
-                }
-
-                if (!obj.isForage(null) && !IsGrabbableWorld(obj)) {
-                    continue;
-                }
-
-                if (Game1.player.professions.Contains(16)) {
-                    obj.Quality = 4;
-                } else if (random.NextDouble() < Game1.player.ForagingLevel / 30.0) {
-                    obj.Quality = 2;
-                } else if (random.NextDouble() < Game1.player.ForagingLevel / 15.0) {
-                    obj.Quality = 1;
-                }
-
-                if (Game1.player.professions.Contains(13)) {
-                    while (random.NextDouble() < 0.2) {
-                        obj.Stack += 1;
-                    }
-                }
-
-                Monitor.Log($"Grabbing truffle: {obj.Stack}x{quality[obj.Quality]}", LogLevel.Trace);
-                (grabber.heldObject.Value as Chest).addItem(obj);
-                e.Location.Objects.Remove(pair.Key);
-
-                if (Config.DoGainExperience) {
-                    gainExperience(FORAGING, 7);
-                }
-            }
-
-            if ((grabber.heldObject.Value as Chest).items.Count > 0) {
-                grabber.showNextIndex.Value = true;
-            }
+                chest.addItem(truffle.Value);
+				e.Location.Objects.Remove(truffle.Key);
+            
+				if (this._config.DoGainExperience) {
+					this.gainExperience(Farmer.foragingSkill, 7);
+				}
+			}
         }
 
         /// <summary>Raised after the game begins a new day (including when the player loads a save).</summary>
@@ -145,7 +146,7 @@ namespace DeluxeGrabber
                 grabbables.Clear();
                 itemsAdded.Clear();
 
-                if (building.buildingType.Contains("Coop") || building.buildingType.Contains("Slime")) {
+                if (building.buildingType.Contains("Slime")) {
 
                     Monitor.Log($"Searching {building.buildingType} at <{building.tileX},{building.tileY}> for auto-grabber", LogLevel.Trace);
 
@@ -199,8 +200,8 @@ namespace DeluxeGrabber
                                 itemsAdded[name] += 1;
                             }
                             location.Objects.Remove(tile);
-                            if (Config.DoGainExperience) {
-                                gainExperience(FARMING, 5);
+                            if (_config.DoGainExperience) {
+                                gainExperience(Farmer.farmingSkill, 5);
                             }
                         }
 
@@ -225,11 +226,11 @@ namespace DeluxeGrabber
 
         private void AutograbCrops() {
 
-            if (!Config.DoHarvestCrops) {
+            if (!_config.DoHarvestCrops) {
                 return;
             }
 
-            int range = Config.GrabberRange;
+            int range = _config.GrabberRange;
             foreach (GameLocation location in Game1.locations) {
                 foreach (KeyValuePair<Vector2, Object> pair in location.Objects.Pairs) {
                     if (pair.Value.Name.Contains("Grabber")) {
@@ -247,9 +248,9 @@ namespace DeluxeGrabber
                                     if (harvest != null)
                                     {
                                         (grabber.heldObject.Value as Chest).addItem(harvest);
-                                        if (Config.DoGainExperience)
+                                        if (_config.DoGainExperience)
                                         {
-                                            gainExperience(FORAGING, 3);
+                                            gainExperience(Farmer.foragingSkill, 3);
                                         }
                                     }
                                 }
@@ -259,9 +260,9 @@ namespace DeluxeGrabber
                                     if (harvest != null)
                                     {
                                         (grabber.heldObject.Value as Chest).addItem(harvest);
-                                        if (Config.DoGainExperience)
+                                        if (_config.DoGainExperience)
                                         {
-                                            gainExperience(FORAGING, 3);
+                                            gainExperience(Farmer.foragingSkill, 3);
                                         }
                                     }
                                 }
@@ -271,9 +272,9 @@ namespace DeluxeGrabber
                                     if (fruit != null)
                                     {
                                         (grabber.heldObject.Value as Chest).addItem(fruit);
-                                        if (Config.DoGainExperience)
+                                        if (_config.DoGainExperience)
                                         {
-                                            gainExperience(FORAGING, 3);
+                                            gainExperience(Farmer.foragingSkill, 3);
                                         }
                                     }
                                 }
@@ -298,7 +299,7 @@ namespace DeluxeGrabber
                 return null;
             }
 
-            if (!Config.DoHarvestFlowers) {
+            if (!_config.DoHarvestFlowers) {
                 switch(crop.indexOfHarvest.Value) {
                     case 421: return null; // sunflower
                     case 593: return null; // summer spangle
@@ -376,7 +377,7 @@ namespace DeluxeGrabber
                 return null;
             }
 
-            if (!Config.DoHarvestFruitTrees)
+            if (!_config.DoHarvestFruitTrees)
             {
                 return null;
             }
@@ -401,7 +402,7 @@ namespace DeluxeGrabber
 
         private void AutograbWorld() {
 
-            if (!Config.DoGlobalForage) {
+            if (!_config.DoGlobalForage) {
                 return;
             }
 
@@ -410,16 +411,16 @@ namespace DeluxeGrabber
             System.Random random = new System.Random();
             GameLocation foragerMap;
 
-            foragerMap = Game1.getLocationFromName(Config.GlobalForageMap);
+            foragerMap = Game1.getLocationFromName(_config.GlobalForageMap);
             if (foragerMap == null) {
-                Monitor.Log($"Invalid GlobalForageMap '{Config.GlobalForageMap}", LogLevel.Trace);
+                Monitor.Log($"Invalid GlobalForageMap '{_config.GlobalForageMap}", LogLevel.Trace);
                 return;
             }
 
-            foragerMap.Objects.TryGetValue(new Vector2(Config.GlobalForageTileX, Config.GlobalForageTileY), out Object grabber);
+            foragerMap.Objects.TryGetValue(new Vector2(_config.GlobalForageTileX, _config.GlobalForageTileY), out Object grabber);
 
             if (grabber == null || !grabber.Name.Contains("Grabber")) {
-                Monitor.Log($"No auto-grabber at {Config.GlobalForageMap}: <{Config.GlobalForageTileX}, {Config.GlobalForageTileY}>", LogLevel.Trace);
+                Monitor.Log($"No auto-grabber at {_config.GlobalForageMap}: <{_config.GlobalForageTileX}, {_config.GlobalForageTileY}>", LogLevel.Trace);
                 return;
             }
 
@@ -472,8 +473,8 @@ namespace DeluxeGrabber
 
                                     dirt.crop = null;
 
-                                    if (Config.DoGainExperience) {
-                                        gainExperience(FORAGING, 3);
+                                    if (_config.DoGainExperience) {
+                                        gainExperience(Farmer.foragingSkill, 3);
                                     }
                                 }
                             }
@@ -557,13 +558,13 @@ namespace DeluxeGrabber
                     }
                     location.Objects.Remove(tile);
 
-                    if (Config.DoGainExperience) {
-                        gainExperience(FORAGING, 7);
+                    if (_config.DoGainExperience) {
+                        gainExperience(Farmer.foragingSkill, 7);
                     }
                 }
 
                 // check farm cave for mushrooms
-                if (Config.DoHarvestFarmCave)
+                if (_config.DoHarvestFarmCave)
                 {
                     if (location is FarmCave)
                     {
@@ -614,9 +615,6 @@ namespace DeluxeGrabber
                 return obj.Name.Contains("Slime Ball");
             }
 
-            if (obj.Name.Contains("Egg") || obj.Name.Contains("Wool") || obj.Name.Contains("Foot") || obj.Name.Contains("Feather")) {
-                return true;
-            }
             return false;
         }
 
